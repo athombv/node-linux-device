@@ -28,5 +28,6 @@
   "bugs": {
     "url": "https://github.com/athombv/node-linux-device/issues"
   },
-  "homepage": "https://github.com/athombv/node-linux-device#readme"
+  "homepage": "https://github.com/athombv/node-linux-device#readme",
+  "readme": "README.md"
 }
