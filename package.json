@@ -28,5 +28,10 @@
   "bugs": {
     "url": "https://github.com/athombv/node-linux-device/issues"
   },
-  "homepage": "https://github.com/athombv/node-linux-device#readme"
+  "homepage": "https://github.com/athombv/node-linux-device#readme",
+  "dependencies": {
+    "bindings": "^1.2.1",
+    "nan": "^2.1.0",
+    "node-gyp": "^3.2.1"
+  }
 }
