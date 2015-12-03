@@ -1,0 +1,32 @@
+{
+  "name": "linux-device",
+  "version": "1.0.0",
+  "description": "Native addon to communicate with linux devices (can also be used for sockets or FIFOs)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "install": "node-gyp rebuild"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/athombv/node-linux-device.git"
+  },
+  "keywords": [
+    "ioctl",
+    "fs",
+    "dev",
+    "device",
+    "read",
+    "write",
+    "event",
+    "async",
+    "non-blocking"
+  ],
+  "author": "Jeroen Vollenbrock <jeroen@athom.com>",
+  "license": "ISC",
+  "gypfile": true,
+  "bugs": {
+    "url": "https://github.com/athombv/node-linux-device/issues"
+  },
+  "homepage": "https://github.com/athombv/node-linux-device#readme"
+}
