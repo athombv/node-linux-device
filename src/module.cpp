@@ -82,7 +82,7 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
         }
 
         if(!deviceHandle->abort) {
-            SetErrorMessage("A read error has occured");
+            SetErrorMessage(strerror(errno));
         }
 
         FILE *tmpFile = deviceHandle->fd;
@@ -139,9 +139,16 @@ class DeviceWriteWorker : public Nan::AsyncWorker {
     }
 
     void Execute() {
-        int res = fwrite(buffer, bufferSize, 1, deviceHandle->fd);
-        if(res != 1) {
-            SetErrorMessage("A write error has occured");
+        uint8_t *current = buffer;
+        size_t length = 0;
+        while(length < bufferSize) {
+            ssize_t res = write(fileno(deviceHandle->fd), &current[length], bufferSize-length);
+            if(res < 0 ) {
+                SetErrorMessage(strerror(errno));
+                length = bufferSize;
+            } else {
+                length += res;
+            }
         }
     }
 
@@ -170,9 +177,13 @@ NAN_METHOD(DeviceHandle::New) {
     const char *devPathCString = devPath.c_str();
 
     const char *devMode = info[1]->ToBoolean()->Value() ? "a+" : "r";
+    FILE *fd = fopen(devPathCString, devMode);
+    if(!fd) {
+        return Nan::ThrowError(strerror(errno));
+    }
 
     DeviceHandle* self = new DeviceHandle();
-    self->fd = fopen(devPathCString, devMode);
+    self->fd = fd;
     self->object_size = info[2]->Uint32Value();
 
     self->Wrap(info.This());
