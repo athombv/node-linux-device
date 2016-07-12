@@ -68,7 +68,7 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
         if(callback) delete callback;
     }
 
-    void Execute(const AsyncProgressWorker::ExecutionProgress& progress) {
+    void Execute(const Nan::AsyncProgressWorker::ExecutionProgress& progress) {
         uint8_t buffer[deviceHandle->object_size];
         size_t i = 0;
         ssize_t count = 0;
