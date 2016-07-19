@@ -55,6 +55,7 @@ class DeviceHandle: public Nan::ObjectWrap {
     }
     FILE *fd;
     uint32_t object_size;
+    uint32_t min_object_size;
     bool abort;
     Nan::Callback *closeCB;
 };
@@ -72,17 +73,19 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
         uint8_t buffer[deviceHandle->object_size];
         size_t i = 0;
         ssize_t count = 0;
-        while(!deviceHandle->abort && (count = read(fileno(deviceHandle->fd), &buffer[i], deviceHandle->object_size-i)) >= 0) {
+        int fno = fileno(deviceHandle->fd);
+        while(!deviceHandle->abort && (count = read(fno, &buffer[i], deviceHandle->object_size-i)) > 0) {
             i += count;
-            if(i < deviceHandle->object_size) continue;
-            i = 0;
+            if(i < deviceHandle->min_object_size) continue;
+
             wait = true;
-            progress.Send((char*)buffer, deviceHandle->object_size);
+            progress.Send((char*)buffer, i);
+            i = 0;
             while(!deviceHandle->abort && wait ) usleep(500);
         }
 
         if(!deviceHandle->abort) {
-            SetErrorMessage(strerror(errno));
+            SetErrorMessage(count == 0 ? "EOF" : strerror(errno));
         }
 
         FILE *tmpFile = deviceHandle->fd;
@@ -107,6 +110,7 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
     }
 
     void WorkComplete() {
+        Nan::HandleScope scope;
         Nan::AsyncProgressWorker::WorkComplete();
         deviceHandle->Finish();
         if(deviceHandle->closeCB) {
@@ -169,8 +173,8 @@ NAN_METHOD(DeviceHandle::New) {
 
     assert(info.IsConstructCall());
 
-    if(info.Length() < 4 || !info[0]->IsString() || !info[1]->IsBoolean() || !info[2]->IsUint32() || !info[3]->IsFunction()) {
-        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle(string path, boolean enableWrite, positive number objectSize, function callback)");
+    if(info.Length() < 4 || !info[0]->IsString() || !info[1]->IsBoolean() || !info[2]->IsUint32() || !(info[3]->IsFunction() || (info[3]->IsUint32() && info[4]->IsFunction()) )) {
+        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle(string path, boolean enableWrite, positive number objectSize, [positive number minimalObjectSize,] function callback)");
     }
 
     std::string devPath(*v8::String::Utf8Value(info[0]));
@@ -184,11 +188,19 @@ NAN_METHOD(DeviceHandle::New) {
 
     DeviceHandle* self = new DeviceHandle();
     self->fd = fd;
-    self->object_size = info[2]->Uint32Value();
+    self->object_size = self->min_object_size = info[2]->Uint32Value();
+    v8::Local<v8::Function> cb;
+
+    if(info[3]->IsUint32()) {
+        cb = info[4].As<Function>();
+        self->min_object_size = info[3]->Uint32Value();
+    } else {
+        cb = info[3].As<Function>();
+    }
 
     self->Wrap(info.This());
 
-    DeviceReadWorker* readWorker = new DeviceReadWorker(self, info[3].As<Function>());
+    DeviceReadWorker* readWorker = new DeviceReadWorker(self, cb);
     Nan::AsyncQueueWorker(readWorker);
 
     self->Ref();
