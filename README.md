@@ -14,13 +14,14 @@ $ npm install linux-device
 API
 --------
 
-**new DeviceHandle(String path, Boolean enableWrite, Number objectSize, Function callback(Error err, Buffer data) )**
+**new DeviceHandle(String path, Boolean enableWrite, Number objectSize, [Number minimalObjectSize,] Function callback(Error err, Buffer data) )**
 
 Creates a new DeviceHandle instance.
 
  - `Path` A path to a file or device
  - `enableWrite` True if file should be opened in write mode
- - `objectSize` Desired size in bytes for each callback event
+ - `objectSize` Maximal size in bytes for each callback event
+ - `minimalObjectSize` Minimal size in bytes for each callback event (defaults to ObjectSize)
  - `callback(Error err, Buffer data)` Callback function that is invoked whenever data of `objectSize` is available.
 
 **DeviceHandle.write(Buffer data [, Function callback(Error err)] )**

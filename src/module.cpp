@@ -2,12 +2,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <poll.h>
 
 #ifdef __linux__
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <string.h>
 #endif
+
+#define READ_TIMEOUT 2000
 
 using namespace v8;
 
@@ -53,7 +56,7 @@ class DeviceHandle: public Nan::ObjectWrap {
 
         return result;
     }
-    FILE *fd;
+    int fd;
     uint32_t object_size;
     uint32_t min_object_size;
     bool abort;
@@ -73,8 +76,15 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
         uint8_t buffer[deviceHandle->object_size];
         size_t i = 0;
         ssize_t count = 0;
-        int fno = fileno(deviceHandle->fd);
-        while(!deviceHandle->abort && (count = read(fno, &buffer[i], deviceHandle->object_size-i)) > 0) {
+        struct pollfd file = {
+            deviceHandle->fd, /* file descriptor */
+            POLLIN,           /* requested events */
+            0                 /* returned events */
+        };
+        while(     ((count = poll(&file, 1, READ_TIMEOUT)) >= 0)
+                && (!deviceHandle->abort)
+                && (count == 0 || ((file.revents & POLLIN) == POLLIN && (count = read(deviceHandle->fd, &buffer[i], deviceHandle->object_size-i)) > 0))
+        ) {
             i += count;
             if(i < deviceHandle->min_object_size) continue;
 
@@ -85,13 +95,13 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
         }
 
         if(!deviceHandle->abort) {
-            SetErrorMessage(count == 0 ? "EOF" : strerror(errno));
+            SetErrorMessage(strerror(errno));
         }
 
-        FILE *tmpFile = deviceHandle->fd;
-        deviceHandle->fd = NULL;
+        int tmpFile = deviceHandle->fd;
+        deviceHandle->fd = 0;
 
-        if(tmpFile) fclose(tmpFile);
+        if(tmpFile) close(tmpFile);
 
         deviceHandle->abort = true;
     }
@@ -146,7 +156,7 @@ class DeviceWriteWorker : public Nan::AsyncWorker {
         uint8_t *current = buffer;
         size_t length = 0;
         while(length < bufferSize) {
-            ssize_t res = write(fileno(deviceHandle->fd), &current[length], bufferSize-length);
+            ssize_t res = write(deviceHandle->fd, &current[length], bufferSize-length);
             if(res < 0 ) {
                 SetErrorMessage(strerror(errno));
                 length = bufferSize;
@@ -180,9 +190,9 @@ NAN_METHOD(DeviceHandle::New) {
     std::string devPath(*v8::String::Utf8Value(info[0]));
     const char *devPathCString = devPath.c_str();
 
-    const char *devMode = info[1]->ToBoolean()->Value() ? "a+" : "r";
-    FILE *fd = fopen(devPathCString, devMode);
-    if(!fd) {
+    int devMode = info[1]->ToBoolean()->Value() ? O_RDWR : O_RDONLY;
+    int fd = open(devPathCString, devMode);
+    if(fd < 0) {
         return Nan::ThrowError(strerror(errno));
     }
 
@@ -275,7 +285,7 @@ NAN_METHOD(DeviceHandle::IOctl) {
         bufferLength = node::Buffer::Length(bufferObj);
     }
 
-    if(ioctl(fileno(self->fd), _IOC(direction, type, cmd, bufferLength), bufferData) == -1) {
+    if(ioctl(self->fd, _IOC(direction, type, cmd, bufferLength), bufferData) == -1) {
         return Nan::ThrowError(strerror(errno));
     }
 
@@ -303,7 +313,7 @@ NAN_METHOD(DeviceHandle::IOctlRaw) {
         bufferData = node::Buffer::Data(bufferObj);
     }
 
-    if(ioctl(fileno(self->fd), cmd, bufferData) == -1) {
+    if(ioctl(self->fd, cmd, bufferData) == -1) {
         return Nan::ThrowError(strerror(errno));
     }
 
@@ -321,11 +331,7 @@ NAN_METHOD(DeviceHandle::Close) {
         self->closeCB = new Nan::Callback(info[0].As<Function>());
     }
 
-    FILE * tmpFile = self->fd;
-    self->fd = NULL;
     self->abort = true;
-
-    fclose(tmpFile);
 
     info.GetReturnValue().Set(info.This());
 }
