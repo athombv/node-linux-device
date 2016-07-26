@@ -81,10 +81,12 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
             POLLIN,           /* requested events */
             0                 /* returned events */
         };
-        while(     ((count = poll(&file, 1, READ_TIMEOUT)) >= 0)
-                && (!deviceHandle->abort)
-                && (count == 0 || ((file.revents & POLLIN) == POLLIN && (count = read(deviceHandle->fd, &buffer[i], deviceHandle->object_size-i)) > 0))
+        while(  (   ((count = poll(&file, 1, READ_TIMEOUT)) >= 0)
+                 && (!deviceHandle->abort)
+                 && (count == 0 || ((file.revents & POLLIN) == POLLIN && (count = read(deviceHandle->fd, &buffer[i], deviceHandle->object_size-i)) > 0))
+                ) || errno == EINTR
         ) {
+            if(errno == EINTR || count <= 0) continue;
             i += count;
             if(i < deviceHandle->min_object_size) continue;
 
