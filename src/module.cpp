@@ -14,6 +14,13 @@
 
 using namespace v8;
 
+bool device_abort = false;
+
+void device_exit_handler()
+{
+    device_abort = true;
+}
+
 class DeviceHandle: public Nan::ObjectWrap {
   public:
     DeviceHandle() : abort(false), closeCB(NULL) {}
@@ -81,10 +88,13 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
             POLLIN,           /* requested events */
             0                 /* returned events */
         };
-        while(  (   ((count = poll(&file, 1, READ_TIMEOUT)) >= 0)
+        while(  (   !device_abort
+                 && ((count = poll(&file, 1, READ_TIMEOUT)) >= 0)
                  && (!deviceHandle->abort)
                  && (count == 0 || ((file.revents & POLLIN) == POLLIN && (count = read(deviceHandle->fd, &buffer[i], deviceHandle->object_size-i)) > 0))
-                ) || errno == EINTR
+                ) || (
+                     errno == EINTR
+                  && !device_abort)
         ) {
             if(errno == EINTR || count <= 0) continue;
             i += count;
@@ -93,7 +103,7 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
             wait = true;
             progress.Send((char*)buffer, i);
             i = 0;
-            while(!deviceHandle->abort && wait ) usleep(500);
+            while(!deviceHandle->abort && wait && !device_abort) usleep(500);
         }
 
         if(!deviceHandle->abort) {
@@ -169,6 +179,7 @@ class DeviceWriteWorker : public Nan::AsyncWorker {
     }
 
     void WorkComplete() {
+        Nan::HandleScope scope;
         Nan::AsyncWorker::WorkComplete();
         deviceHandle->Finish();
     }
@@ -354,6 +365,7 @@ NAN_MODULE_INIT(setupModule) {
     Local<Function> deviceHandleConstructor = DeviceHandle::GetV8TPL();
 
     Nan::Set(target, Nan::New("DeviceHandle").ToLocalChecked(), deviceHandleConstructor);
+    std::atexit(device_exit_handler);
 }
 
 NODE_MODULE(DeviceHandle, setupModule)
