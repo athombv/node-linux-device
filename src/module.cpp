@@ -241,7 +241,7 @@ NAN_METHOD(DeviceHandle::Write) {
     }
 
     if(info.Length() < 2 || !info[0]->IsObject() || !info[1]->IsFunction()) {
-        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle.write( string path )");
+        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle.write( Buffer data, function callback )");
     }
 
     Local<Object> bufferObj = info[0]->ToObject();

@@ -1,0 +1,4 @@
+{
+    "functions": ["write", "ioctl", "ioctl_raw", "close", "gpio"],
+    "constants": ["IOCTL_NONE","IOCTL_READ","IOCTL_WRITE","IOCTL_RW"]
+}

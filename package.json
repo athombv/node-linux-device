@@ -1,6 +1,6 @@
 {
   "name": "linux-device",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Native addon to communicate with linux devices (can also be used for sockets or FIFOs)",
   "main": "index.js",
   "scripts": {
@@ -28,10 +28,13 @@
   "bugs": {
     "url": "https://github.com/athombv/node-linux-device/issues"
   },
+  "bin": "./bin/remote-device-server",
   "homepage": "https://github.com/athombv/node-linux-device#readme",
   "dependencies": {
     "bindings": "^1.2.1",
     "nan": "^2.1.0",
-    "node-gyp": "^3.2.1"
+    "node-gyp": "^3.2.1",
+    "socket.io": "1.7.2",
+    "socket.io-client": "1.7.2"
   }
 }
