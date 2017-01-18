@@ -8,10 +8,18 @@ let handles = {};
 class DeviceHandleProxy {
     constructor(path) {
         let args = Array.prototype.slice.apply(arguments);
-        handles[path] = args.pop();
+        handles[path] = this;
+        this._callback = args.pop();
         this._path = path;
+        this._closed = false;
         args.unshift('create_handle');
-        server.then(serv => serv.emit.apply(serv, args));
+        server.then(serv => {
+            serv.emit.apply(serv, args);
+        });
+    }
+    
+    isClosed() {
+        return this._closed;
     }
 }
 
@@ -24,11 +32,11 @@ module.exports = function(url) {
         serv.on('connect_timeout', () => reject());
 
         serv.on('read_error', function(path, err) {
-            if(handles[path]) handles[path](err);
+            if(handles[path]) handles[path]._callback(err);
         });
     
         serv.on('read_data', (path, data) => {
-            if(handles[path]) handles[path](null, data);
+            if(handles[path]) handles[path]._callback(null, data);
         });
         
         serv.on('server_error', (error) => {
@@ -39,7 +47,8 @@ module.exports = function(url) {
     
         serv.on('disconnect', () => {
             Object.keys(handles).forEach((handle) => {
-                handles[handle](new Error('Remote Connection unexpectedly closed.'));
+                handles[handle]._closed = true;
+                handles[handle]._callback(new Error('Remote Connection unexpectedly closed.'));
             });
         });
     });
@@ -47,6 +56,7 @@ module.exports = function(url) {
     metadata.functions.forEach((func) => {
         DeviceHandleProxy.prototype[func] = function() {
             server.then(serv => serv.emit.bind(serv, func, this._path).apply(null, arguments));
+            if(func == 'close') this._closed = true;
         };
     });
 

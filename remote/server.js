@@ -25,10 +25,12 @@ module.exports = function(port) {
     
             try {
                 connections[path] = new DeviceHandle(path, enableWrite, objSize, minObjSize, (err, data) => {
+                    console.log('CB:', path, err, data);
                     if(err) socket.emit('read_error', path, err);
                     else socket.emit('read_data', path, data);
                 });
             } catch(err) {
+                console.log('CB:', path, err, data);
                 socket.emit('read_error', path, err.stack);
             }
         });
@@ -40,6 +42,7 @@ module.exports = function(port) {
             socket.on(name, function() {
                 let args = Array.prototype.slice.apply(arguments);
                 let path = args.shift();
+                console.log(path, name, args);
                 try {
                     connections[path][name].apply(connections[path], args);
                 } catch(e) {
