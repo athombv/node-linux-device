@@ -60,6 +60,12 @@ module.exports = function(url) {
         };
     });
 
+    metadata.static_functions.forEach((func) => {
+        DeviceHandleProxy[func] = function() {
+            server.then(serv => serv.emit.bind(serv, 'static_'+func).apply(null, arguments));
+        };
+    });
+
     metadata.constants.forEach((c, index) => {
         DeviceHandleProxy[c] = c;
     });

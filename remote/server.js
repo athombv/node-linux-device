@@ -51,6 +51,19 @@ module.exports = function(port) {
             });
         });
         
+        metadata.static_functions.forEach((name) => {
+            if(blacklist.indexOf(name) >= 0) return;
+            socket.on('static_'+name, function() {
+                let args = Array.prototype.slice.apply(arguments);
+                console.log('static', name, arguments);
+                try {
+                    DeviceHandle[name].apply(null, arguments);
+                } catch(e) {
+                    socket.emit('server_error', e && e.stack ? e.stack : e);
+                }
+            });
+        });
+        
         socket.on('ioctl', (path, dir, type, cmd, data) => {
             dir = DeviceHandle[dir];
             connections[path].ioctl(dir, type, cmd, data);
