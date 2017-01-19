@@ -13,8 +13,10 @@ class DeviceHandleProxy {
         this._path = path;
         this._closed = false;
         args.unshift('create_handle');
-        server.then(serv => {
+        server = server.then(serv => {
+            console.log('EMITTING!!!');
             serv.emit.apply(serv, args);
+            return serv;
         });
     }
     
@@ -28,8 +30,6 @@ module.exports = function(url) {
         let serv = io.connect(url);
         
         serv.on('connect', () => resolve(serv));
-        serv.on('connect_error', () => reject());
-        serv.on('connect_timeout', () => reject());
 
         serv.on('read_error', function(path, err) {
             if(handles[path]) handles[path]._callback(err);
@@ -55,14 +55,14 @@ module.exports = function(url) {
 
     metadata.functions.forEach((func) => {
         DeviceHandleProxy.prototype[func] = function() {
-            server.then(serv => serv.emit.bind(serv, func, this._path).apply(null, arguments));
+            server = server.then(serv => serv.emit.bind(serv, func, this._path).apply(null, arguments));
             if(func == 'close') this._closed = true;
         };
     });
 
     metadata.static_functions.forEach((func) => {
         DeviceHandleProxy[func] = function() {
-            server.then(serv => serv.emit.bind(serv, 'static_'+func).apply(null, arguments));
+            server = server.then(serv => serv.emit.bind(serv, 'static_'+func).apply(null, arguments));
         };
     });
 

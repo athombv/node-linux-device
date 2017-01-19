@@ -30,7 +30,7 @@ module.exports = function(port) {
                     else socket.emit('read_data', path, data);
                 });
             } catch(err) {
-                console.log('CB:', path, err, data);
+                console.log('CB:', path, err);
                 socket.emit('read_error', path, err.stack);
             }
         });
@@ -63,7 +63,7 @@ module.exports = function(port) {
                 }
             });
         });
-        
+
         socket.on('ioctl', (path, dir, type, cmd, data) => {
             dir = DeviceHandle[dir];
             connections[path].ioctl(dir, type, cmd, data);
