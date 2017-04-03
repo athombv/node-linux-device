@@ -21,9 +21,27 @@ void device_exit_handler()
     device_abort = true;
 }
 
+class UVLockGuard {
+  public:
+    UVLockGuard(uv_mutex_t *mutex) :_mutex(mutex) {
+        uv_mutex_lock(mutex);
+    }
+    ~UVLockGuard() {
+        uv_mutex_unlock(_mutex);
+    }
+  private:
+    uv_mutex_t *_mutex;
+};
+
 class DeviceHandle: public Nan::ObjectWrap {
   public:
-    DeviceHandle() : abort(false), closeCB(NULL) {}
+    DeviceHandle() : abort(false), closeCB(NULL) {
+        uv_mutex_init(&write_mutex);
+    }
+
+    ~DeviceHandle() {
+        uv_mutex_destroy(&write_mutex);
+    }
 
     void Finish() {
         this->Unref();
@@ -68,6 +86,7 @@ class DeviceHandle: public Nan::ObjectWrap {
     uint32_t min_object_size;
     bool abort;
     Nan::Callback *closeCB;
+    uv_mutex_t write_mutex;
 };
 
 class DeviceReadWorker : public Nan::AsyncProgressWorker {
@@ -165,6 +184,7 @@ class DeviceWriteWorker : public Nan::AsyncWorker {
     }
 
     void Execute() {
+        UVLockGuard(&deviceHandle->write_mutex);
         uint8_t *current = buffer;
         size_t length = 0;
         while(length < bufferSize) {
