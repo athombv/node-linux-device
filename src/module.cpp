@@ -196,6 +196,7 @@ class DeviceWriteWorker : public Nan::AsyncWorker {
                 length += res;
             }
         }
+        fsync(deviceHandle->fd);
     }
 
     void WorkComplete() {
