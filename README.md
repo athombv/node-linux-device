@@ -24,12 +24,13 @@ Creates a new DeviceHandle instance.
  - `minimalObjectSize` Minimal size in bytes for each callback event (defaults to ObjectSize)
  - `callback(Error err, Buffer data)` Callback function that is invoked whenever data of `objectSize` is available.
 
-**DeviceHandle.write(Buffer data [, Function callback(Error err)] )**
+**DeviceHandle.write(Buffer data [, Object opts], Function callback(Error err) )**
 
 Writes data to the device or file.
 
 - `data` A buffer containing the data to write (append)
-- `callback(Error err)` [optional] Callback function containing an optional error while writing.
+- `opts` [optional] An object containing write options. Supported values are `repetitions` and `interval`
+- `callback(Error err)` Callback function containing an optional error while writing.
 
 **DeviceHandle.ioctl(Number direction, Number type, Number cmd [, Buffer buffer])**
 

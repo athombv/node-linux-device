@@ -172,8 +172,12 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
 
 class DeviceWriteWorker : public Nan::AsyncWorker {
   public:
-    DeviceWriteWorker(DeviceHandle *deviceHandle_, v8::Local<v8::Function> callback_, void* buffer_, size_t bufferSize_)
-        : Nan::AsyncWorker(new Nan::Callback(callback_)), deviceHandle(deviceHandle_), bufferSize(bufferSize_) {
+    DeviceWriteWorker(DeviceHandle *deviceHandle_, v8::Local<v8::Function> callback_, void* buffer_, size_t bufferSize_, size_t count_ = 1, size_t interval_ = 0)
+        : Nan::AsyncWorker(new Nan::Callback(callback_)),
+                    deviceHandle(deviceHandle_),
+                    bufferSize(bufferSize_),
+                    count(count_),
+                    interval(interval_) {
             buffer = new uint8_t[bufferSize_];
             memcpy(buffer, buffer_, bufferSize_);
         }
@@ -186,17 +190,20 @@ class DeviceWriteWorker : public Nan::AsyncWorker {
     void Execute() {
         UVLockGuard(&deviceHandle->write_mutex);
         uint8_t *current = buffer;
-        size_t length = 0;
-        while(length < bufferSize) {
-            ssize_t res = write(deviceHandle->fd, &current[length], bufferSize-length);
-            if(res < 0 ) {
-                SetErrorMessage(strerror(errno));
-                length = bufferSize;
-            } else {
-                length += res;
+        do {
+            size_t length = 0;
+            while(length < bufferSize) {
+                ssize_t res = write(deviceHandle->fd, &current[length], bufferSize-length);
+                if(res < 0 ) {
+                    SetErrorMessage(strerror(errno));
+                    length = bufferSize;
+                } else {
+                    length += res;
+                }
             }
-        }
-        fsync(deviceHandle->fd);
+            fsync(deviceHandle->fd);
+            if(count > 1) usleep(interval);
+        } while(--count);
     }
 
     void WorkComplete() {
@@ -209,6 +216,8 @@ class DeviceWriteWorker : public Nan::AsyncWorker {
     DeviceHandle *deviceHandle;
     uint8_t *buffer;
     size_t bufferSize;
+    size_t count;
+    size_t interval;
 };
 
 
@@ -261,17 +270,30 @@ NAN_METHOD(DeviceHandle::Write) {
         return Nan::ThrowError("Cannot write to closed DeviceHandle");
     }
 
-    if(info.Length() < 2 || !info[0]->IsObject() || !info[1]->IsFunction()) {
-        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle.write( Buffer data, function callback )");
+    if(info.Length() < 2 || !info[0]->IsObject() || !info[info.Length()-2]->IsObject() || !info[info.Length()-1]->IsFunction()) {
+        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle.write( Buffer data[, Object opts], function callback )");
     }
 
     Local<Object> bufferObj = info[0]->ToObject();
     char*  bufferData   = node::Buffer::Data(bufferObj);
     size_t bufferLength = node::Buffer::Length(bufferObj);
 
+    size_t repetitions = 1;
+    size_t interval = 0;
+    Local<Object> opts = info[info.Length()-2]->ToObject();
+    Local<Value> repObj = opts->Get(Nan::New("repetitions").ToLocalChecked());
+    if(repObj->IsNumber()) {
+        repetitions = repObj->Uint32Value();
+    }
+
+    Local<Value> intvlObj = opts->Get(Nan::New("interval").ToLocalChecked());
+    if(intvlObj->IsNumber()) {
+        interval = intvlObj->Uint32Value();
+    }
+
     self->Ref();
 
-    DeviceWriteWorker* writeWorker = new DeviceWriteWorker(self, info[1].As<Function>(), bufferData, bufferLength);
+    DeviceWriteWorker* writeWorker = new DeviceWriteWorker(self, info[1].As<Function>(), bufferData, bufferLength, repetitions, interval);
     Nan::AsyncQueueWorker(writeWorker);
 
     info.GetReturnValue().Set(info.This());
