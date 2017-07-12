@@ -153,6 +153,7 @@ class DeviceReadWorker : public Nan::AsyncProgressWorker {
     void WorkComplete() {
         Nan::HandleScope scope;
         Nan::AsyncProgressWorker::WorkComplete();
+        deviceHandle->abort = true;
         deviceHandle->Finish();
         if(deviceHandle->closeCB) {
             deviceHandle->closeCB->Call(0, NULL);
