@@ -294,7 +294,7 @@ NAN_METHOD(DeviceHandle::Write) {
 
     self->Ref();
 
-    DeviceWriteWorker* writeWorker = new DeviceWriteWorker(self, info[1].As<Function>(), bufferData, bufferLength, repetitions, interval);
+    DeviceWriteWorker* writeWorker = new DeviceWriteWorker(self, info[info.Length()-1].As<Function>(), bufferData, bufferLength, repetitions, interval);
     Nan::AsyncQueueWorker(writeWorker);
 
     info.GetReturnValue().Set(info.This());
