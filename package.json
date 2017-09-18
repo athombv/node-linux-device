@@ -36,5 +36,9 @@
     "node-gyp": "^3.2.1",
     "socket.io": "1.7.2",
     "socket.io-client": "1.7.2"
+  },
+  "config": {
+    "npmPublishTagProduction": "latest",
+    "npmPublishTagStaging": "beta"
   }
 }
