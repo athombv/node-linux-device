@@ -235,6 +235,9 @@ NAN_METHOD(DeviceHandle::New) {
     const char *devPathCString = devPath.c_str();
 
     int devMode = info[1]->ToBoolean()->Value() ? O_RDWR : O_RDONLY;
+#ifdef O_CLOEXEC
+    devMode |= O_CLOEXEC;
+#endif
     int fd = open(devPathCString, devMode);
     if(fd < 0) {
         return Nan::ThrowError(strerror(errno));
