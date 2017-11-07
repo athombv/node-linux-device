@@ -14,7 +14,6 @@ class DeviceHandleProxy {
         this._closed = false;
         args.unshift('create_handle');
         server = server.then(serv => {
-            console.log('EMITTING!!!');
             serv.emit.apply(serv, args);
             return serv;
         });
