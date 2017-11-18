@@ -1,11 +1,11 @@
 {
   "name": "linux-device",
-  "version": "1.0.18",
+  "version": "2.0.0",
   "description": "Native addon to communicate with linux devices (can also be used for sockets or FIFOs)",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "install": "node-gyp rebuild"
+    "docs": "jsdoc -c jsdoc.conf.json lib/DeviceHandle.js README.md"
   },
   "repository": {
     "type": "git",
@@ -32,14 +32,16 @@
   "homepage": "https://github.com/athombv/node-linux-device#readme",
   "dependencies": {
     "bindings": "^1.2.1",
-    "nan": "^2.1.0",
     "node-gyp": "^3.2.1",
-    "socket.io": "1.7.2",
-    "socket.io-client": "1.7.2"
+    "socket.io": "^2.0.4",
+    "socket.io-client": "^2.0.4"
   },
   "config": {
     "skipNpmInstall": true,
     "npmPublishTagProduction": "latest",
     "npmPublishTagStaging": "beta"
+  },
+  "devDependencies": {
+    "jsdoc": "^3.5.5"
   }
 }

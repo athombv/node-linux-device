@@ -1,418 +1,573 @@
-#include <nan.h>
-#include <stdio.h>
+#include <node_api.h>
+#include <uv.h>
+
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <string>
+#include <strings.h>
 #include <poll.h>
 
 #ifdef __linux__
 #include <sys/ioctl.h>
 #include <errno.h>
-#include <string.h>
 #endif
 
-#define READ_TIMEOUT 2000
+#define NAPI_ASSERT_STATUS(status) if(status != napi_ok) do {fprintf(stderr, "NAPI ASSERTION FAILED [%s@%d]: %d\n", __FUNCTION__, __LINE__, status ); abort();} while(0)
 
-using namespace v8;
 
-bool device_abort = false;
+class FileHandle {
+  public:
+    static napi_value Init(napi_env env);
+    static napi_value JSConstructor(napi_env env, napi_callback_info info);
+    static void JSDestructor(napi_env env, void* data, void* hint);
 
-void device_exit_handler()
-{
-    device_abort = true;
+    static napi_value Open(napi_env env, napi_callback_info info);
+    static napi_value Close(napi_env env, napi_callback_info info);
+    static napi_value Read(napi_env env, napi_callback_info info);
+    static napi_value StopReading(napi_env env, napi_callback_info info);
+    static napi_value Write(napi_env env, napi_callback_info info);
+    static napi_value Writev(napi_env env, napi_callback_info info);
+#ifdef __linux__
+    static napi_value IOCtl(napi_env env, napi_callback_info info);
+    static napi_value IOCtlRaw(napi_env env, napi_callback_info info);
+#endif
+
+  protected:
+    static void OnRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
+    static void OnAlloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf);
+    static void RequestResult(uv_fs_t *req);
+
+  private:
+    std::string _path;
+    bool _reading;
+    int _fd;
+
+    uv_pipe_t *_file_pipe;
+};
+
+
+struct fs_req_params {
+    napi_env env;
+    FileHandle *handle;
+    uv_fs_t req;
+    napi_ref owner;
+    napi_async_context context;
+    napi_deferred deferred;
+};
+
+fs_req_params *createFSRequest(napi_env env, FileHandle *handle, napi_value owner, napi_value *promise) {
+    napi_status status;
+    fs_req_params *params;
+    napi_value resource, resourceName;
+    napi_handle_scope scope;
+
+    params = new fs_req_params;
+    params->env = env;
+    params->handle = handle;
+
+    bzero(&params->req, sizeof(uv_fs_t));
+    params->req.data = params;
+
+    status = napi_open_handle_scope(env, &scope);
+    NAPI_ASSERT_STATUS(status);
+    status = napi_create_reference(env, owner, 1, &params->owner);
+    NAPI_ASSERT_STATUS(status);
+
+    if(promise) {
+        status = napi_create_promise(env, &params->deferred, promise);
+        NAPI_ASSERT_STATUS(status);
+    }
+
+    status = napi_create_string_utf8(env, "FileHandle", NAPI_AUTO_LENGTH, &resource);
+    NAPI_ASSERT_STATUS(status);
+    status = napi_create_string_utf8(env, "FileHandle", NAPI_AUTO_LENGTH, &resourceName);
+    NAPI_ASSERT_STATUS(status);
+
+    status = napi_async_init(env, resource, resourceName, &params->context);
+    NAPI_ASSERT_STATUS(status);
+    status = napi_close_handle_scope(env, scope);
+    NAPI_ASSERT_STATUS(status);
+
+    return params;
 }
 
-class UVLockGuard {
-  public:
-    UVLockGuard(uv_mutex_t *mutex) :_mutex(mutex) {
-        uv_mutex_lock(mutex);
-    }
-    ~UVLockGuard() {
-        uv_mutex_unlock(_mutex);
-    }
-  private:
-    uv_mutex_t *_mutex;
-};
+napi_status destroyFSRequest(fs_req_params *params) {
+    napi_status status;
+    napi_handle_scope scope = NULL;
+    status = napi_open_handle_scope(params->env, &scope);
+    NAPI_ASSERT_STATUS(status);
+    status = napi_delete_reference(params->env, params->owner);
+    NAPI_ASSERT_STATUS(status);
+    status = napi_async_destroy(params->env, params->context);
+    NAPI_ASSERT_STATUS(status);
+    status = napi_close_handle_scope(params->env, scope);
+    NAPI_ASSERT_STATUS(status);
+    uv_fs_req_cleanup(&params->req);
+    delete params;
+    return status;
+}
 
-class DeviceHandle: public Nan::ObjectWrap {
-  public:
-    DeviceHandle() : abort(false), closeCB(NULL) {
-        uv_mutex_init(&write_mutex);
-    }
+napi_status makeUVError(napi_env env, int code, napi_value *result) {
+    napi_status status;
+    napi_value jsCode;
+    napi_value msg;
+    status = napi_create_string_utf8(env, uv_err_name(code), NAPI_AUTO_LENGTH, &jsCode);
+    NAPI_ASSERT_STATUS(status);
+    status = napi_create_string_utf8(env, uv_strerror(code), NAPI_AUTO_LENGTH, &msg);
+    NAPI_ASSERT_STATUS(status);
+    return napi_create_error(env, jsCode, msg, result);
+}
 
-    ~DeviceHandle() {
-        uv_mutex_destroy(&write_mutex);
-    }
 
-    void Finish() {
-        this->Unref();
-    }
 
-    static NAN_METHOD(New);
-    static NAN_METHOD(Write);
-    static NAN_METHOD(Close);
-    static NAN_METHOD(IsClosed);
-#ifdef __linux__
-    static NAN_METHOD(IOctl);
-    static NAN_METHOD(IOctlRaw);
-#endif
+#define NAPI_DECLARE_METHOD(properties, name, m, len)  do { properties[*len].utf8name = name; properties[*len].method = m; (*len) ++; } while(0)
+#define NAPI_DECLARE_STATIC_VALUE(properties, name, v, len)  do { properties[*len].utf8name = name; properties[*len].value = v; properties[*len].attributes = napi_static; (*len) ++; } while(0)
 
-    static Local<Function> GetV8TPL(){
-        Local<FunctionTemplate> tpl = Nan::New<FunctionTemplate>(New);
-        tpl->SetClassName(Nan::New("DeviceHandle").ToLocalChecked());
-        tpl->InstanceTemplate()->SetInternalFieldCount(1);
-
-        SetPrototypeMethod(tpl, "write", Write);
-        SetPrototypeMethod(tpl, "close", Close);
-        SetPrototypeMethod(tpl, "isClosed", IsClosed);
+napi_value FileHandle::Init(napi_env env) {
+    napi_value result, constants;
+    napi_create_object(env, &constants);
 
 #ifdef __linux__
-        SetPrototypeMethod(tpl, "ioctl", IOctl);
-        SetPrototypeMethod(tpl, "ioctl_raw", IOctlRaw);
+    napi_create_uint32(env, _IOC_NONE, &result);
+    napi_set_named_property(env, constants, "IOCTL_NONE", result);
+    napi_create_uint32(env, _IOC_READ, &result);
+    napi_set_named_property(env, constants, "IOCTL_READ", result);
+    napi_create_uint32(env, _IOC_WRITE, &result);
+    napi_set_named_property(env, constants, "IOCTL_WRITE", result);
+    napi_create_uint32(env, _IOC_READ | _IOC_WRITE, &result);
+    napi_set_named_property(env, constants, "IOCTL_RW", result);
 #endif
 
-        Local<Function> result = tpl->GetFunction();
-
+    napi_property_descriptor properties[9] = {};
+    size_t property_length = 0;
+    NAPI_DECLARE_METHOD(properties, "open", FileHandle::Open, &property_length);
+    NAPI_DECLARE_METHOD(properties, "close", FileHandle::Close, &property_length);
+    NAPI_DECLARE_METHOD(properties, "read", FileHandle::Read, &property_length);
+    NAPI_DECLARE_METHOD(properties, "stopReading", FileHandle::StopReading, &property_length);
+    NAPI_DECLARE_METHOD(properties, "write", FileHandle::Write, &property_length);
+    NAPI_DECLARE_METHOD(properties, "writev", FileHandle::Writev, &property_length);
+    NAPI_DECLARE_STATIC_VALUE(properties, "constants", constants, &property_length);
 #ifdef __linux__
-        Nan::Set(result, Nan::New("IOCTL_NONE").ToLocalChecked(), Nan::New<Number>( _IOC_NONE ));
-        Nan::Set(result, Nan::New("IOCTL_READ").ToLocalChecked(), Nan::New<Number>( _IOC_READ ));
-        Nan::Set(result, Nan::New("IOCTL_WRITE").ToLocalChecked(), Nan::New<Number>( _IOC_WRITE ));
-        Nan::Set(result, Nan::New("IOCTL_RW").ToLocalChecked(), Nan::New<Number>( _IOC_READ | _IOC_WRITE ));
+    NAPI_DECLARE_METHOD(properties, "ioctl", FileHandle::IOCtl, &property_length);
+    NAPI_DECLARE_METHOD(properties, "ioctlRaw", FileHandle::IOCtlRaw, &property_length);
 #endif
 
-        return result;
+    napi_define_class(env, "FileHandle", NAPI_AUTO_LENGTH,
+        FileHandle::JSConstructor, NULL, property_length, properties,
+        &result);
+    return result;
+}
+
+napi_value FileHandle::JSConstructor(napi_env env, napi_callback_info info) {
+    napi_value jsThis, path;
+    size_t argc = 1;
+    FileHandle *cThis;
+    char path_str[2048];
+
+    napi_get_cb_info(env, info, &argc, &path, &jsThis, NULL);
+
+    cThis = new FileHandle;
+    napi_get_value_string_utf8(env, path, path_str, sizeof(path_str), NULL);
+    cThis->_path = path_str;
+    cThis->_fd = 0;
+    cThis->_file_pipe = NULL;
+    cThis->_reading = false;
+    napi_wrap(env, jsThis, cThis, FileHandle::JSDestructor, NULL, NULL);
+    return jsThis;
+}
+
+void FileHandle::JSDestructor(napi_env env, void* data, void* hint) {
+    FileHandle *cThis = (FileHandle*)data;
+    if(cThis->_file_pipe) {
+        uv_close((uv_handle_t*)cThis->_file_pipe, NULL);
+        cThis->_file_pipe = NULL;
     }
-    int fd;
-    uint32_t object_size;
-    uint32_t min_object_size;
-    bool abort;
-    Nan::Callback *closeCB;
-    uv_mutex_t write_mutex;
-};
+    delete cThis;
+}
 
-class DeviceReadWorker : public Nan::AsyncProgressWorker {
-  public:
-    DeviceReadWorker(DeviceHandle *deviceHandle_, v8::Local<v8::Function> callback_)
-        : Nan::AsyncProgressWorker(new Nan::Callback(callback_)), deviceHandle(deviceHandle_), wait(false) { }
+static void FreeBufferCB(napi_env env, void* finalize_data, void* buffer) {
+    free(finalize_data);
+}
 
-    ~DeviceReadWorker() {
-        if(callback) delete callback;
+void FileHandle::OnRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf) {
+    fs_req_params *params = (fs_req_params *)handle->data;
+    napi_value readCb = NULL, argv[2], jsThis = NULL;
+    napi_handle_scope scope = NULL;
+    napi_env env; //params might be freed by make_callback
+    size_t argc = 1;
+
+    env = params->env;
+
+    napi_open_handle_scope(env, &scope);
+
+    napi_get_undefined(env, &argv[0]);
+
+    if(nread <= 0 && buf->base != NULL) {
+        free(buf->base);
     }
 
-    void Execute(const Nan::AsyncProgressWorker::ExecutionProgress& progress) {
-        uint8_t buffer[deviceHandle->object_size];
-        size_t i = 0;
-        ssize_t count = 0;
-        struct pollfd file = {
-            deviceHandle->fd, /* file descriptor */
-            POLLIN,           /* requested events */
-            0                 /* returned events */
-        };
-        while(  (   !device_abort
-                 && ((count = poll(&file, 1, READ_TIMEOUT)) >= 0)
-                 && (!deviceHandle->abort)
-                 && (count == 0 || ((file.revents & POLLIN) == POLLIN && (count = read(deviceHandle->fd, &buffer[i], deviceHandle->object_size-i)) > 0))
-                ) || (
-                     errno == EINTR
-                  && !device_abort)
-        ) {
-            if(errno == EINTR || count <= 0) continue;
-            i += count;
-            if(i < deviceHandle->min_object_size) continue;
+    if(nread < 0) {
+        makeUVError(env, nread, &argv[0]);
+        params->handle->_reading = false;
+    } else if(nread == 0) {
+        napi_get_null(env, &argv[1]);
+        argc = 2;
+    } else if(nread > 0) {
+        void* base = realloc(buf->base, nread);
+        napi_create_external_buffer(env, nread, base, FreeBufferCB, NULL, &argv[1]);
+        argc = 2;
+    }
 
-            wait = true;
-            progress.Send((char*)buffer, i);
-            i = 0;
-            while(!deviceHandle->abort && wait && !device_abort) usleep(500);
+	napi_get_reference_value(env, params->owner, &readCb);
+	napi_create_object(env, &jsThis);
+	napi_make_callback(env, params->context, jsThis, readCb, argc, argv, NULL);
+    napi_close_handle_scope(env, scope);
+}
+
+void FileHandle::OnAlloc(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
+    buf->base = (char*)malloc(suggested_size);
+    buf->len = suggested_size;
+}
+
+napi_value FileHandle::Read(napi_env env, napi_callback_info info) {
+    napi_value jsThis, cb, err;
+    size_t size = 1;
+    FileHandle *cThis;
+    int result;
+    fs_req_params *params;
+
+    cb = NULL;
+    napi_get_cb_info(env, info, &size, &cb, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
+
+    napi_valuetype type = napi_undefined;
+    napi_typeof(env, cb, &type);
+    if(type != napi_function) {
+        napi_throw_type_error(env, NULL, "Expected a function");
+        return jsThis;
+    }
+
+    if(cThis->_fd > 0 && !cThis->_reading) {
+        cThis->_reading = true;
+        params = createFSRequest(env, cThis, cb, NULL);
+        if(!cThis->_file_pipe) {
+            cThis->_file_pipe = new uv_pipe_t;
+            cThis->_file_pipe->data = params;
+
+            uv_pipe_init(uv_default_loop(), cThis->_file_pipe, 0);
+            uv_pipe_open(cThis->_file_pipe, cThis->_fd);
         }
-
-        if(!deviceHandle->abort) {
-            SetErrorMessage(strerror(errno));
-        }
-
-        int tmpFile = deviceHandle->fd;
-        deviceHandle->fd = 0;
-
-        if(tmpFile) close(tmpFile);
-
-        deviceHandle->abort = true;
-    }
-
-    void HandleProgressCallback(const char *data, size_t data_size) {
-        Nan::HandleScope scope;
-
-        if(deviceHandle->abort) return;
-
-        Local<Value> argv[2];
-        argv[0] = Nan::Null();
-        argv[1] = Nan::CopyBuffer(data, data_size).ToLocalChecked(); //transfers ownership.
-        callback->Call(2, argv);
-
-        wait = false;
-    }
-
-    void WorkComplete() {
-        Nan::HandleScope scope;
-        Nan::AsyncProgressWorker::WorkComplete();
-        deviceHandle->abort = true;
-        deviceHandle->Finish();
-        if(deviceHandle->closeCB) {
-            deviceHandle->closeCB->Call(0, NULL);
-            delete deviceHandle->closeCB;
-            deviceHandle->closeCB = NULL;
+        result = uv_read_start((uv_stream_t*)cThis->_file_pipe, OnAlloc, OnRead);
+        if(result < 0) {
+            makeUVError(env, result, &err);
+            napi_call_function(env, jsThis, cb, 1, &err, NULL);
+            destroyFSRequest(params);
         }
     }
 
-    void HandleOKCallback() {
-        //do nothing...
+    return jsThis;
+}
+
+
+napi_value FileHandle::StopReading(napi_env env, napi_callback_info info) {
+    napi_value jsThis;
+    FileHandle *cThis;
+    napi_get_cb_info(env, info, 0, NULL, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
+    fs_req_params *params;
+    if(cThis->_file_pipe) {
+        params = (fs_req_params *)cThis->_file_pipe->data;
+        uv_read_stop((uv_stream_t*)cThis->_file_pipe);
+        destroyFSRequest(params);
     }
+    cThis->_reading = false;
+    return jsThis;
+}
 
-  private:
-    DeviceHandle *deviceHandle;
-    bool wait;
-};
+void FileHandle::RequestResult(uv_fs_t *req) {
+    napi_handle_scope scope = NULL;
+    napi_value result = NULL;
+    fs_req_params *params = static_cast<fs_req_params*>(req->data);
 
-class DeviceWriteWorker : public Nan::AsyncWorker {
-  public:
-    DeviceWriteWorker(DeviceHandle *deviceHandle_, v8::Local<v8::Function> callback_, void* buffer_, size_t bufferSize_, size_t count_ = 1, size_t interval_ = 0)
-        : Nan::AsyncWorker(new Nan::Callback(callback_)),
-                    deviceHandle(deviceHandle_),
-                    bufferSize(bufferSize_),
-                    count(count_),
-                    interval(interval_) {
-            buffer = new uint8_t[bufferSize_];
-            memcpy(buffer, buffer_, bufferSize_);
-        }
+    napi_open_handle_scope(params->env, &scope);
 
-    ~DeviceWriteWorker() {
-        if(callback) delete callback;
-        if(buffer) delete[] buffer;
-    }
+    if (req->result < 0) {
+        // An error happened.
+        makeUVError(params->env, req->result, &result);
 
-    void Execute() {
-        UVLockGuard(&deviceHandle->write_mutex);
-        uint8_t *current = buffer;
-        do {
-            size_t length = 0;
-            while(length < bufferSize) {
-                ssize_t res = write(deviceHandle->fd, &current[length], bufferSize-length);
-                if(res < 0 ) {
-                    SetErrorMessage(strerror(errno));
-                    length = bufferSize;
-                } else {
-                    length += res;
-                }
-            }
-            fsync(deviceHandle->fd);
-            if(count > 1) usleep(interval);
-        } while(--count);
-    }
-
-    void WorkComplete() {
-        Nan::HandleScope scope;
-        Nan::AsyncWorker::WorkComplete();
-        deviceHandle->Finish();
-    }
-
-  private:
-    DeviceHandle *deviceHandle;
-    uint8_t *buffer;
-    size_t bufferSize;
-    size_t count;
-    size_t interval;
-};
-
-
-NAN_METHOD(DeviceHandle::New) {
-    Nan::HandleScope scope;
-
-    assert(info.IsConstructCall());
-
-    if(info.Length() < 4 || !info[0]->IsString() || !info[1]->IsBoolean() || !info[2]->IsUint32() || !(info[3]->IsFunction() || (info[3]->IsUint32() && info[4]->IsFunction()) )) {
-        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle(string path, boolean enableWrite, positive number objectSize, [positive number minimalObjectSize,] function callback)");
-    }
-
-    std::string devPath(*v8::String::Utf8Value(info[0]));
-    const char *devPathCString = devPath.c_str();
-
-    int devMode = info[1]->ToBoolean()->Value() ? O_RDWR : O_RDONLY;
-#ifdef O_CLOEXEC
-    devMode |= O_CLOEXEC;
-#endif
-    int fd = open(devPathCString, devMode);
-    if(fd < 0) {
-        return Nan::ThrowError(strerror(errno));
-    }
-
-    DeviceHandle* self = new DeviceHandle();
-    self->fd = fd;
-    self->object_size = self->min_object_size = info[2]->Uint32Value();
-    v8::Local<v8::Function> cb;
-
-    if(info[3]->IsUint32()) {
-        cb = info[4].As<Function>();
-        self->min_object_size = info[3]->Uint32Value();
+        napi_reject_deferred(params->env, params->deferred, result);
     } else {
-        cb = info[3].As<Function>();
+        switch (req->fs_type) {
+          case UV_FS_OPEN:
+            params->handle->_fd = req->result;
+            napi_create_int32(params->env, req->result, &result);
+            break;
+          case UV_FS_CLOSE:
+            if(params->handle->_file_pipe) {
+                uv_close((uv_handle_t*)params->handle->_file_pipe, NULL);
+                params->handle->_file_pipe = NULL;
+            }
+            params->handle->_fd = 0;
+            napi_create_int32(params->env, req->result, &result);
+            break;
+          case UV_FS_WRITE:
+            napi_create_int32(params->env, req->result, &result);
+            break;
+          default:
+            napi_get_undefined(params->env, &result);
+            fprintf(stderr, "[linux-device] Got RequestResult for unimplemented method????\n");
+            break;
+        }
+
+        napi_resolve_deferred(params->env, params->deferred, result);
     }
 
-    self->Wrap(info.This());
+    napi_close_handle_scope(params->env, scope);
 
-    DeviceReadWorker* readWorker = new DeviceReadWorker(self, cb);
-    Nan::AsyncQueueWorker(readWorker);
+    destroyFSRequest(params);
 
-    self->Ref();
-
-    info.GetReturnValue().Set(info.This());
+    return;
 }
 
-NAN_METHOD(DeviceHandle::Write) {
-    Nan::HandleScope scope;
+napi_value FileHandle::Write(napi_env env, napi_callback_info info) {
+    napi_value jsThis, data, err, promise;
+    FileHandle *cThis;
+    size_t argc = 1;
+    int result;
+    fs_req_params *params;
+    void *buf = NULL;
+    size_t len = 0;
 
-    DeviceHandle* self = ObjectWrap::Unwrap<DeviceHandle>(info.This());
+    napi_get_cb_info(env, info, &argc, &data, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
 
-    if(self->abort) {
-        return Nan::ThrowError("Cannot write to closed DeviceHandle");
+    bool isPendingException = false;
+    napi_is_exception_pending(env, &isPendingException);
+    if(isPendingException) return jsThis;
+
+    params = createFSRequest(env, cThis, jsThis, &promise);
+
+    napi_get_buffer_info(env, data, &buf, &len);
+
+    //this buffer is retained by js
+    uv_buf_t buffer = uv_buf_init((char*)buf, len);
+
+    result = uv_fs_write(uv_default_loop(), &params->req, cThis->_fd, &buffer, 1, -1, RequestResult);
+
+    if(result < 0) {
+        makeUVError(env, result, &err);
+        napi_reject_deferred(env, params->deferred, err);
+        destroyFSRequest(params);
     }
 
-    if(info.Length() < 2 || !info[0]->IsObject() || !info[info.Length()-2]->IsObject() || !info[info.Length()-1]->IsFunction()) {
-        return Nan::ThrowTypeError("Invalid parameter: DeviceHandle.write( Buffer data[, Object opts], function callback )");
+    return promise;
+}
+
+napi_value FileHandle::Writev(napi_env env, napi_callback_info info) {
+    napi_value jsThis, data, err, promise;
+    FileHandle *cThis;
+    size_t argc = 1;
+    int result;
+    fs_req_params *params;
+    void *buf = NULL;
+    uint32_t buffer_count = 0, i = 0;
+
+    napi_get_cb_info(env, info, &argc, &data, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
+
+    bool isPendingException = false;
+    napi_is_exception_pending(env, &isPendingException);
+    if(isPendingException) return jsThis;
+
+    params = createFSRequest(env, cThis, jsThis, &promise);
+
+    napi_get_array_length(env, data, &buffer_count);
+    uv_buf_t buffers[buffer_count];
+
+    for(i = 0; i < buffer_count; i++) {
+        napi_value buffer = NULL;
+        size_t len = 0;
+        napi_get_element(env, data, i, &buffer);
+        napi_get_named_property(env, buffer, "chunk", &buffer);
+        //these buffers are retained by js
+        napi_get_buffer_info(env, buffer, &buf, &len);
+        buffers[i] = uv_buf_init((char*)buf, len);
     }
 
-    Local<Object> bufferObj = info[0]->ToObject();
-    char*  bufferData   = node::Buffer::Data(bufferObj);
-    size_t bufferLength = node::Buffer::Length(bufferObj);
+    result = uv_fs_write(uv_default_loop(), &params->req, cThis->_fd, buffers, buffer_count, -1, RequestResult);
 
-    size_t repetitions = 1;
-    size_t interval = 0;
-    Local<Object> opts = info[info.Length()-2]->ToObject();
-    Local<Value> repObj = opts->Get(Nan::New("repetitions").ToLocalChecked());
-    if(repObj->IsNumber()) {
-        repetitions = repObj->Uint32Value();
+    if(result < 0) {
+        makeUVError(env, result, &err);
+        napi_reject_deferred(env, params->deferred, err);
+        destroyFSRequest(params);
     }
 
-    Local<Value> intvlObj = opts->Get(Nan::New("interval").ToLocalChecked());
-    if(intvlObj->IsNumber()) {
-        interval = intvlObj->Uint32Value();
+    return promise;
+}
+
+napi_value FileHandle::Open(napi_env env, napi_callback_info info) {
+    napi_value jsThis, mode, err, promise;
+    FileHandle *cThis;
+    uint32_t c_flags;
+    int result;
+    size_t argc = 1;
+    fs_req_params *params;
+
+    napi_get_cb_info(env, info, &argc, &mode, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
+
+    bool isPendingException = false;
+    napi_is_exception_pending(env, &isPendingException);
+    if(isPendingException) return jsThis;
+
+    params = createFSRequest(env, cThis, jsThis, &promise);
+
+    napi_get_value_uint32(env, mode, &c_flags);
+
+    result = uv_fs_open(uv_default_loop(), &params->req, cThis->_path.c_str(), c_flags, 0, RequestResult);
+
+    if(result < 0) {
+        makeUVError(env, result, &err);
+        napi_reject_deferred(env, params->deferred, err);
+        destroyFSRequest(params);
     }
 
-    self->Ref();
+    return promise;
+}
 
-    DeviceWriteWorker* writeWorker = new DeviceWriteWorker(self, info[info.Length()-1].As<Function>(), bufferData, bufferLength, repetitions, interval);
-    Nan::AsyncQueueWorker(writeWorker);
 
-    info.GetReturnValue().Set(info.This());
+napi_value FileHandle::Close(napi_env env, napi_callback_info info) {
+    napi_value jsThis, err, promise;
+    FileHandle *cThis;
+    int result;
+    fs_req_params *params;
+
+    napi_get_cb_info(env, info, 0, NULL, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
+
+    bool isPendingException = false;
+    napi_is_exception_pending(env, &isPendingException);
+    if(isPendingException) return jsThis;
+
+    StopReading(env, info);
+
+    params = createFSRequest(env, cThis, jsThis, &promise);
+
+    result = uv_fs_close(uv_default_loop(), &params->req, cThis->_fd, RequestResult);
+
+    if(result < 0) {
+        makeUVError(env, result, &err);
+        napi_reject_deferred(env, params->deferred, err);
+        destroyFSRequest(params);
+    }
+
+    return promise;
 }
 
 #ifdef __linux__
-NAN_METHOD(DeviceHandle::IOctl) {
-    Nan::HandleScope scope;
-
-    DeviceHandle* self = ObjectWrap::Unwrap<DeviceHandle>(info.This());
-
-    if(self->abort) {
-        return Nan::ThrowError("Cannot ioctl closed DeviceHandle");
-    }
-
-    if(info.Length() < 3 || !info[0]->IsNumber() || !info[1]->IsNumber() || !info[2]->IsNumber() || (info.Length() > 3 && !info[3]->IsObject())) {
-        return Nan::ThrowError("Invalid parameter type: DeviceHandle.ioctl( int direction, int type, int cmd [, buffer data])");
-    }
-
-    uint32_t direction = info[0]->Uint32Value();
-    uint32_t type = info[1]->Uint32Value();
-    uint32_t cmd = info[2]->Uint32Value();
+napi_value FileHandle::IOCtl(napi_env env, napi_callback_info info) {
+    napi_value jsThis, argv[4], err;
+    FileHandle *cThis;
+    size_t argc = 4;
+    uint32_t direction = 0, type = 0, cmd = 0;
     void*  bufferData = NULL;
     size_t bufferLength = 0;
 
+    napi_get_cb_info(env, info, &argc, argv, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
+
+    bool isPendingException = false;
+    napi_is_exception_pending(env, &isPendingException);
+    if(isPendingException) return jsThis;
+
+    if(argc < 4) {
+        napi_throw_type_error(env, NULL, "invalid_parameter");
+        return jsThis;
+    }
+
+    napi_get_value_uint32(env, argv[0], &direction);
+    napi_get_value_uint32(env, argv[1], &type);
+    napi_get_value_uint32(env, argv[2], &cmd);
+
+
     if( (direction != _IOC_READ && direction != _IOC_WRITE && direction != (_IOC_READ | _IOC_WRITE) && direction != _IOC_NONE) || direction > _IOC_DIRMASK) {
-        return Nan::ThrowTypeError("Invalid direction. Use DeviceHandle.IOCTL_RW or DeviceHandle.IOCTL_READ or DeviceHandle.IOCTL_WRITE or DeviceHandle.IOCTL_NONE");
+        napi_throw_type_error(env, NULL, "Invalid direction. Use DeviceHandle.constants.IOCTL_RW or DeviceHandle.constants.IOCTL_READ or DeviceHandle.constants.IOCTL_WRITE or DeviceHandle.constants.IOCTL_NONE");
+        return jsThis;
     }
 
     if(type > _IOC_TYPEMASK) {
-        return Nan::ThrowError("Invalid type.");
+        napi_throw_type_error(env, NULL, "invalid_type");
+        return jsThis;
     }
 
     if(cmd > _IOC_NRMASK) {
-        return Nan::ThrowError("Invalid cmd.");
+        napi_throw_type_error(env, NULL, "invalid_cmd");
+        return jsThis;
     }
 
-    if(bufferLength > _IOC_SIZEMASK) {
-        return Nan::ThrowError("Invalid buffer size.");
+    if(argc > 3) {
+        napi_get_buffer_info(env, argv[3], &bufferData, &bufferLength);
+        if(bufferLength > _IOC_SIZEMASK) {
+            napi_throw_type_error(env, NULL, "invalid_buffer_size");
+            return jsThis;
+        }
     }
 
-    if(info.Length() > 3 && info[3]->IsObject()) {
-        Local<Object> bufferObj = info[3]->ToObject();
-        bufferData   = node::Buffer::Data(bufferObj);
-        bufferLength = node::Buffer::Length(bufferObj);
+    if(ioctl(cThis->_fd, _IOC(direction, type, cmd, bufferLength), bufferData) == -1) {
+        makeUVError(env, errno, &err);
+        napi_throw(env, err);
     }
 
-    if(ioctl(self->fd, _IOC(direction, type, cmd, bufferLength), bufferData) == -1) {
-        return Nan::ThrowError(strerror(errno));
-    }
-
-    info.GetReturnValue().Set(info.This());
+    return jsThis;
 }
 
-NAN_METHOD(DeviceHandle::IOctlRaw) {
-    Nan::HandleScope scope;
-
-    DeviceHandle* self = ObjectWrap::Unwrap<DeviceHandle>(info.This());
-
-    if(self->abort) {
-        return Nan::ThrowError("Cannot ioctl closed DeviceHandle");
-    }
-
-    if(info.Length() < 1 || !info[0]->IsNumber() || (info.Length() > 1 && !info[1]->IsObject())) {
-        return Nan::ThrowTypeError("Invalid parameter type: DeviceHandle.ioctl_raw( int cmd [, buffer data] )");
-    }
-
-    uint32_t cmd = info[0]->Uint32Value();
+napi_value FileHandle::IOCtlRaw(napi_env env, napi_callback_info info) {
+    napi_value jsThis, argv[2], err;
+    FileHandle *cThis;
+    size_t argc = 2;
+    uint32_t cmd = 0;
     void*  bufferData = NULL;
+    size_t bufferLength = 0;
 
-    if(info.Length() > 1 && info[1]->IsObject()) {
-        Local<Object> bufferObj = info[1]->ToObject();
-        bufferData = node::Buffer::Data(bufferObj);
+    napi_get_cb_info(env, info, &argc, argv, &jsThis, NULL);
+    napi_unwrap(env, jsThis, (void**)&cThis);
+
+    bool isPendingException = false;
+    napi_is_exception_pending(env, &isPendingException);
+    if(isPendingException) return jsThis;
+
+    if(argc < 2) {
+        napi_throw_type_error(env, NULL, "invalid_parameter");
+        return jsThis;
     }
 
-    if(ioctl(self->fd, cmd, bufferData) == -1) {
-        return Nan::ThrowError(strerror(errno));
+    napi_get_value_uint32(env, argv[0], &cmd);
+
+    if(!cmd) {
+        napi_throw_type_error(env, NULL, "invalid_cmd");
+        return jsThis;
     }
 
-    info.GetReturnValue().Set(info.This());
+    napi_get_buffer_info(env, argv[1], &bufferData, &bufferLength);
+    if(bufferLength > _IOC_SIZEMASK) {
+        napi_throw_type_error(env, NULL, "invalid_buffer_size");
+        return jsThis;
+    }
+
+    if(ioctl(cThis->_fd, cmd, bufferData) == -1) {
+        makeUVError(env, errno, &err);
+        napi_throw(env, err);
+    }
+
+    return jsThis;
 }
 #endif
 
-NAN_METHOD(DeviceHandle::Close) {
-    Nan::HandleScope scope;
-
-    DeviceHandle* self = ObjectWrap::Unwrap<DeviceHandle>(info.This());
-    if(self->abort) return;
-
-    if(info[0]->IsFunction()) {
-        self->closeCB = new Nan::Callback(info[0].As<Function>());
-    }
-
-    self->abort = true;
-
-    info.GetReturnValue().Set(info.This());
+napi_value Init(napi_env env, napi_value result) {
+    return FileHandle::Init(env);
 }
 
-NAN_METHOD(DeviceHandle::IsClosed) {
-    Nan::HandleScope scope;
-
-    DeviceHandle* self = ObjectWrap::Unwrap<DeviceHandle>(info.This());
-
-    info.GetReturnValue().Set(Nan::New<Boolean>(self->abort));
-}
-
-
-/**
- * exposes the functions through the module exports
- **/
-NAN_MODULE_INIT(setupModule) {
-    Local<Function> deviceHandleConstructor = DeviceHandle::GetV8TPL();
-
-    Nan::Set(target, Nan::New("DeviceHandle").ToLocalChecked(), deviceHandleConstructor);
-    std::atexit(device_exit_handler);
-}
-
-NODE_MODULE(DeviceHandle, setupModule)
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init);

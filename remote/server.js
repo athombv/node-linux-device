@@ -1,10 +1,68 @@
 "use strict";
 
+const util = require('util');
+const DeviceHandle = require('../lib/DeviceHandle.js');
+
+class Handler {
+    constructor(handle, socket, options) {
+        this.socket = socket;
+        this._handle = handle;
+        this.handle = new DeviceHandle(options);
+        this.__bindEvents();
+    }
+    
+    __destruct() {
+        this.handle.close();
+    }
+    
+    __bindEvents() {
+        const that = this;
+        this.handle.emit = function(...args) {
+            that.socket.emit('handle_event', that._handle, ...args);
+            return this.constructor.prototype.emit.apply(this, args);
+        }
+    }
+    
+    async _handleFunction(func, ...args) {
+        if(this._currentFunc) {
+            await this._currentFunc;
+        }
+        
+        var res;
+        if(this[func]) res = this[func](...args);
+        else res = this.handle[func](...args);
+        
+        this._currentFunc = res;
+        await res;
+        if(res === this._currentFunc) this._currentFunc = null;
+        return res;
+    }
+    
+    _writeChunk(chunk) {
+        return this.handle._writePromise(chunk);
+    }
+    
+    _writeChunks(chunks) {
+        return this.handle._writevPromise(chunks);
+    }
+    
+    _startRead(size) {
+        if(this._isReading) return;
+        this._isReading = true;
+        this.handle.once('data', () => {
+            this._isReading = false;
+            process.nextTick(() => {
+                this.handle.pause();
+            });
+        });
+        this.handle.resume();
+    }
+}
+
 
 module.exports = function(port) {
     port = port || 8081;
     const io = require('socket.io')(port);
-    const DeviceHandle = require('..');
     const metadata = require('./metadata.json');
     
     console.log('Started listening at port', port);
@@ -12,66 +70,39 @@ module.exports = function(port) {
     io.on('connection', function (socket) {
         let connections = {};
         console.log('Incoming connection.');
+        socket.emit('constants', DeviceHandle.constants);
         
-        socket.on('create_handle', function(path, enableWrite, objSize, minObjSize) {
-            console.log('Creating handle:', path);
+        socket.on('create_handle', function(handle, options, cb) {
+            console.log('Creating handle:', handle, options);
             
-            if(connections[path]) {
-                connections[path].close();
-                delete connections[path];
+            if(connections[handle]) {
+                connections[handle].__destruct();
+                delete connections[handle];
             }
-    
-            if(typeof minObjSize == 'undefined') minObjSize = objSize;
-    
-            try {
-                connections[path] = new DeviceHandle(path, enableWrite, objSize, minObjSize, (err, data) => {
-                    console.log('CB:', path, err, data);
-                    if(err) socket.emit('read_error', path, err);
-                    else socket.emit('read_data', path, data);
-                });
-            } catch(err) {
-                console.log('CB:', path, err);
-                socket.emit('read_error', path, err.stack);
-            }
+            connections[handle] = new Handler(handle, socket, options);
+            cb();
         });
         
-        const blacklist = ['ioctl'];
         
-        metadata.functions.forEach((name) => {
-            if(blacklist.indexOf(name) >= 0) return;
-            socket.on(name, function() {
-                let args = Array.prototype.slice.apply(arguments);
-                let path = args.shift();
-                console.log(path, name, args);
-                try {
-                    connections[path][name].apply(connections[path], args);
-                } catch(e) {
-                    socket.emit('server_error', e && e.stack ? e.stack : e);
-                }
-            });
-        });
+        async function handleFunction(func, handle, ...args) {
+            const cb = args.pop();
+            if(!connections[handle]) return cb();
+            return connections[handle]._handleFunction(func, ...args)
+                    .then(res => cb(null, res)).catch(err => cb(err.stack));
+        }
         
-        metadata.static_functions.forEach((name) => {
-            if(blacklist.indexOf(name) >= 0) return;
-            socket.on('static_'+name, function() {
-                let args = Array.prototype.slice.apply(arguments);
-                console.log('static', name, arguments);
-                try {
-                    DeviceHandle[name].apply(null, arguments);
-                } catch(e) {
-                    socket.emit('server_error', e && e.stack ? e.stack : e);
-                }
-            });
-        });
-
-        socket.on('ioctl', (path, dir, type, cmd, data) => {
-            dir = DeviceHandle[dir];
-            connections[path].ioctl(dir, type, cmd, data);
-        });
+        async function handleStaticFunction(func, ...args) {
+            const cb = args.pop();
+            return DH[func](...args)
+                    .then(res => cb(null, res)).catch(err => cb(err.stack));
+        }
+        
+        socket.on('function', handleFunction);
+        socket.on('static_func', handleStaticFunction)
         
         socket.on('disconnect', function () {
             //destruct all
-            Object.keys(connections).forEach((path) => { connections[path].close(); })
+            Object.keys(connections).forEach((handle) => { connections[handle].__destruct(); });
         });
     });
 };
