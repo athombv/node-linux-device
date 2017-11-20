@@ -1,0 +1,10 @@
+{
+    "opts": {
+        "destination": "docs"
+    },
+    "templates": {
+        "default": {
+            "outputSourceFiles": false
+        }
+    }
+}

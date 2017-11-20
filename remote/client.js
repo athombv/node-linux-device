@@ -1,72 +1,132 @@
 "use strict";
+
+const {Duplex} = require('stream');
+const fs = require('fs');
+const util = require('util');
+
 const io = require('socket.io-client');
 const metadata = require('./metadata.json');
 
 let server;
 let handles = {};
 
-class DeviceHandleProxy {
-    constructor(path) {
-        let args = Array.prototype.slice.apply(arguments);
-        handles[path] = this;
-        this._callback = args.pop();
-        this._path = path;
-        this._closed = false;
-        args.unshift('create_handle');
-        server = server.then(serv => {
-            serv.emit.apply(serv, args);
-            return serv;
+let CONSTANTS = Object.assign({}, fs.constants);
+
+let i = 0;
+
+function makeRemoteFunc(...meta) {
+    return async function(...args) {
+        server = await server;
+        if(this._currentCall) await this._currentCall;
+        const work = new Promise((resolve, reject) => {
+            function done(err, res) {
+                //console.log('done', ...meta, err, res);
+                if(err) return reject(err);
+                resolve(res);
+            }
+            //console.log('executing', ...meta, ...args);
+            args.push(done);
+            if(this && this._handle)
+                server.emit(...meta, this._handle, ...args);
+            else
+                server.emit(...meta, ...args);
         });
+        this._currentCall = work;
+        await work;
+        if(this._currentCall === work) this._currentCall = null;
+        return work;
+    };
+}
+
+class DeviceHandleProxy extends Duplex {
+    constructor(options) {
+        super(options);
+        this._handle = ++i;
+        handles[i] = this;
+        this.__init(options);
     }
     
-    isClosed() {
-        return this._closed;
+    isOpen() {
+        return !!this.fd;
+    }
+    
+    _write(chunk, encoding, callback) {
+        this._writeChunk(chunk)
+            .then(res => callback(null, res)).catch(err => callback(err));
+    }
+            
+    _writev(chunks, callback) {
+        this._writeChunks(chunks)
+            .then(res => callback(null, res)).catch(err => callback(err));
+    }
+    
+    _read(size) {
+        this._startRead(size);
+    }
+    
+    _destroy(error, callback) {
+        this.close()
+            .then(res => callback(null, res)).catch(err => callback(err));
+        if(error) this.emit('error', error);
+    }
+    
+    _handle_open(fd) {
+        this.fd = fd;
+        this.emit('open', fd);
+    }
+    
+    _handle_close() {
+        delete this.fd;
+        this.emit('close');
+    }
+    
+    _handle_data(data) {
+        this.push(data);
+    }
+    
+    static get constants() {
+        return CONSTANTS;
     }
 }
 
+DeviceHandleProxy.prototype.__init = makeRemoteFunc('create_handle');
+
+const functions = metadata.functions.concat(metadata.internal_functions);
+functions.forEach((func) => {
+        DeviceHandleProxy.prototype[func] = makeRemoteFunc('function', func);
+});
+
+metadata.static_functions.forEach((func) => {
+    DeviceHandleProxy[func] = makeRemoteFunc('static_func', func);
+});
+
+
 module.exports = function(url) {
     server = new Promise((resolve, reject) => {
-        let serv = io.connect(url);
+        let serv = io.connect(url, {transports: ['websocket']});
         
         serv.on('connect', () => resolve(serv));
-
-        serv.on('read_error', function(path, err) {
-            if(handles[path]) handles[path]._callback(err);
-        });
-    
-        serv.on('read_data', (path, data) => {
-            if(handles[path]) handles[path]._callback(null, data);
-        });
+        serv.on('constants', (constants) => Object.assign(CONSTANTS, constants));
         
         serv.on('server_error', (error) => {
             console.error('[linux-device] An remote error occured:', error);
         });
     
-        serv.on('connect', () => console.log('REMOTE DEVICE SUPPORT ENABLED, CONNECTED TO:', url));
+        serv.on('connect', () => console.log('[linux-device] REMOTE DEVICE SUPPORT ENABLED, CONNECTED TO:', url));
+        
+        serv.on('handle_event', (handle, event, ...args) => {
+            if(!handles[handle]) return;
+            if(handles[handle]['_handle_'+event])
+                handles[handle]['_handle_'+event](...args);
+            else
+                handles[handle].emit(event, ...args);
+        });
     
         serv.on('disconnect', () => {
             Object.keys(handles).forEach((handle) => {
-                handles[handle]._closed = true;
-                handles[handle]._callback(new Error('Remote Connection unexpectedly closed.'));
+                handles[handle].destroy(new Error('Remote connection unexpectedly closed.'));
             });
         });
-    });
-
-    metadata.functions.forEach((func) => {
-        DeviceHandleProxy.prototype[func] = function() {
-            server = server.then(serv => serv.emit.bind(serv, func, this._path).apply(null, arguments));
-            if(func == 'close') this._closed = true;
-        };
-    });
-
-    metadata.static_functions.forEach((func) => {
-        DeviceHandleProxy[func] = function() {
-            server = server.then(serv => serv.emit.bind(serv, 'static_'+func).apply(null, arguments));
-        };
-    });
-
-    metadata.constants.forEach((c, index) => {
-        DeviceHandleProxy[c] = c;
     });
 
     return DeviceHandleProxy;
