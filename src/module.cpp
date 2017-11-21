@@ -346,6 +346,7 @@ void FileHandle::WorkResult(uv_work_t* req, int status) {
 	fs_req_params *params = static_cast<fs_req_params*>(req->data);
 	params->req.fs.fs_type = UV_FS_WRITE;
 	FileHandle::RequestResult(&params->req.fs);
+	free(params->data);
 }
 
 void repeated_write_work(uv_work_t* req) {
