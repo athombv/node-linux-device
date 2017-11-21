@@ -1,5 +1,5 @@
 {
     "functions": ["open", "close", "ioctl", "ioctlRaw", "gpio", "setModemBits", "clearModemBits", "flush"],
-    "internal_functions": ["_writeChunk", "_writeChunks", "_startRead"],
+    "internal_functions": ["_writeChunk", "_startRead"],
     "static_functions": ["gpio"]
 }
