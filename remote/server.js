@@ -28,7 +28,9 @@ class Handler {
 	
 	async _handleFunction(func, ...args) {
 		if(this._currentFunc) {
-			await this._currentFunc;
+    		try {
+				await this._currentFunc;
+			} catch(e) {}
 		}
 		
 		var res;
@@ -36,7 +38,9 @@ class Handler {
 		else res = this.handle[func](...args);
 		
 		this._currentFunc = res;
-		await res;
+		try {
+			await res;
+		} catch(e) {}
 		if(res === this._currentFunc) this._currentFunc = null;
 		return res;
 	}
