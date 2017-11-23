@@ -68,6 +68,7 @@ module.exports = function(port) {
 	port = port || 8081;
 	const io = require('socket.io')(port);
 	const metadata = require('./metadata.json');
+	const emitter = new (require('events').EventEmitter)();
 	
 	console.log('Started listening at port', port);
 	
@@ -97,7 +98,7 @@ module.exports = function(port) {
 		
 		async function handleStaticFunction(func, ...args) {
 			const cb = args.pop();
-			return DH[func](...args)
+			return DeviceHandle[func](...args)
 					.then(res => cb(null, res)).catch(err => cb(err.stack));
 		}
 		
@@ -107,6 +108,9 @@ module.exports = function(port) {
 		socket.on('disconnect', function () {
 			//destruct all
 			Object.keys(connections).forEach((handle) => { connections[handle].__destruct(); });
+			emitter.emit('disconnect');
 		});
+		emitter.emit('connect');
 	});
+	return emitter;
 };
