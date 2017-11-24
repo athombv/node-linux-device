@@ -34,7 +34,9 @@ function makeRemoteFunc(...meta) {
 				server.emit(...meta, ...args);
 		});
 		this._currentCall = work;
-		await work;
+		try {
+		    await work;
+		} catch(e) {}
 		if(this._currentCall === work) this._currentCall = null;
 		return work;
 	};
