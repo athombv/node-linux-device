@@ -288,10 +288,11 @@ napi_value FileHandle::StopReading(napi_env env, napi_callback_info info) {
 	napi_get_cb_info(env, info, 0, NULL, &jsThis, NULL);
 	napi_unwrap(env, jsThis, (void**)&cThis);
 	fs_req_params *params;
-	if(cThis->_file_pipe) {
+	if(cThis->_reading && cThis->_file_pipe) {
 		params = (fs_req_params *)cThis->_file_pipe->data;
 		uv_read_stop((uv_stream_t*)cThis->_file_pipe);
 		destroyFSRequest(params);
+		cThis->_file_pipe->data = NULL;
 	}
 	cThis->_reading = false;
 	return jsThis;
