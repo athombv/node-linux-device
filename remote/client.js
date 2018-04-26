@@ -59,6 +59,10 @@ class DeviceHandleProxy extends Duplex {
 			.then(res => callback(null, res)).catch(err => callback(err));
 	}
 	
+	_writePromise(chunk, encoding) {
+		return this._writeChunk(chunk, {gap: chunk.gap, repetitions: chunk.repetitions});
+	}
+	
 	_read(size) {
 		this._startRead(size);
 	}
