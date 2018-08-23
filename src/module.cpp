@@ -263,7 +263,7 @@ napi_value FileHandle::Read(napi_env env, napi_callback_info info) {
 	if(cThis->_fd > 0 && !cThis->_reading) {
 		cThis->_reading = true;
 		params = createFSRequest(env, cThis, cb, NULL);
-		if(!cThis->_file_pipe) {
+		if(!cThis->_file_pipe || !cThis->_file_pipe->data) {
 			cThis->_file_pipe = new uv_pipe_t;
 			cThis->_file_pipe->data = params;
 
@@ -482,6 +482,7 @@ napi_value FileHandle::Close(napi_env env, napi_callback_info info) {
 	params = createFSRequest(env, cThis, jsThis, &promise);
 
 	result = uv_fs_close(uv_default_loop(), &params->req.fs, cThis->_fd, RequestResult);
+	cThis->_fd = 0;
 
 	if(result < 0) {
 		makeUVError(env, result, &err);
