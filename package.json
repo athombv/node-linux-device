@@ -1,6 +1,6 @@
 {
   "name": "linux-device",
-  "version": "2.0.14",
+  "version": "2.0.15",
   "description": "Native addon to communicate with linux devices (can also be used for sockets or FIFOs)",
   "main": "index.js",
   "scripts": {
