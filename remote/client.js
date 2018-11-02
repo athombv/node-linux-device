@@ -84,7 +84,7 @@ class DeviceHandleProxy extends Duplex {
 	}
 	
 	_handle_data(data) {
-		this.push(data);
+		this.push(Buffer.from(data))
 	}
 	
 	static get constants() {
