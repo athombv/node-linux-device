@@ -167,9 +167,10 @@ void FileHandle::RequestResult(uv_fs_t *req) {
 
 void FileHandle::WorkResult(uv_work_t* req, int status) {
 	fs_req_params *params = static_cast<fs_req_params*>(req->data);
+	void *data = params->data;
 	params->req.fs.fs_type = UV_FS_WRITE;
 	FileHandle::RequestResult(&params->req.fs);
-	free(params->data);
+	free(data);
 }
 
 
