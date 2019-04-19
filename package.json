@@ -32,7 +32,7 @@
   "homepage": "https://github.com/athombv/node-linux-device#readme",
   "dependencies": {
     "bindings": "^1.2.1",
-    "node-gyp": "^3.2.1",
+    "node-gyp": "^3.8.0",
     "socket.io": "^2.0.4",
     "socket.io-client": "^2.0.4"
   },
