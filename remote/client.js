@@ -7,6 +7,8 @@ const util = require('util');
 const io = require('socket.io-client');
 const metadata = require('./metadata.json');
 
+const LDUtils = require('../lib/Utils');
+
 let server;
 let handles = {};
 
@@ -55,36 +57,16 @@ class DeviceHandleProxy extends Duplex {
 	}
 
 	_write(chunk, encoding, callback) {
-    // Custom parsing for IR header.
-    // The stream.write function only accepts an buffer, therefore we need to encode the interval and repetitions in the buffer before using write().
-    let repetitions = 1;
-    let interval = 0;
-    const irHeaderMarker = [0x69, 0x72];
-    if (chunk[0] === irHeaderMarker[0] && chunk[1] === irHeaderMarker[1]
-      && chunk[5] === irHeaderMarker[0] && chunk[6] === irHeaderMarker[1]) {
-      repetitions = chunk[2];
-      interval = Buffer.from(chunk).readUInt16BE(3);
-      chunk = chunk.slice(7)
-    }
+    const { buffer, interval, repetitions } = LDUtils.decodeWriteBuffer(chunk);
 
-    this._writeChunk(chunk, {interval, repetitions})
+    this._writeChunk(buffer, {interval, repetitions})
       .then(res => callback(null, res)).catch(err => callback(err));
 	}
 
 	_writePromise(chunk, encoding) {
-    // Custom parsing for IR header.
-    // The stream.write function only accepts an buffer, therefore we need to encode the interval and repetitions in the buffer before using write().
-    let repetitions = 1;
-    let interval = 0;
-    const irHeaderMarker = [0x69, 0x72];
-    if (chunk[0] === irHeaderMarker[0] && chunk[1] === irHeaderMarker[1]
-      && chunk[5] === irHeaderMarker[0] && chunk[6] === irHeaderMarker[1]) {
-      repetitions = chunk[2];
-      interval = Buffer.from(chunk).readUInt16BE(3);
-      chunk = chunk.slice(7)
-    }
+    const { buffer, interval, repetitions } = LDUtils.decodeWriteBuffer(chunk);
 
-    return this._writeChunk(chunk, {interval, repetitions})
+    return this._writeChunk(buffer, {interval, repetitions})
 	}
 
 	_read(size) {
