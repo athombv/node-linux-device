@@ -65,7 +65,7 @@ class DeviceHandleProxy extends Duplex {
       interval = Buffer.from(chunk).readUInt16BE(3);
       chunk = chunk.slice(7)
     }
-		this._writeChunk(chunk, {gap: interval, repetitions})
+		this._writeChunk(chunk, {interval, repetitions})
 			.then(res => callback(null, res)).catch(err => callback(err));
 	}
 
