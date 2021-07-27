@@ -49,44 +49,54 @@ class DeviceHandleProxy extends Duplex {
 		handles[i] = this;
 		this.__init(options);
 	}
-	
+
 	isOpen() {
 		return !!this.fd;
 	}
-	
+
 	_write(chunk, encoding, callback) {
-		this._writeChunk(chunk, {gap: chunk.gap, repetitions: chunk.repetitions})
+    // Custom parsing for IR header
+    let repetitions;
+    let interval;
+    const irHeaderMarker = [0x69, 0x72];
+    if (chunk[0] === irHeaderMarker[0] && chunk[1] === irHeaderMarker[1]
+      && chunk[5] === irHeaderMarker[0] && chunk[6] === irHeaderMarker[1]) {
+      repetitions = chunk[2];
+      interval = Buffer.from(chunk).readUInt16BE(3);
+      chunk = chunk.slice(7)
+    }
+		this._writeChunk(chunk, {gap: interval, repetitions})
 			.then(res => callback(null, res)).catch(err => callback(err));
 	}
-	
+
 	_writePromise(chunk, encoding) {
 		return this._writeChunk(chunk, {gap: chunk.gap, repetitions: chunk.repetitions});
 	}
-	
+
 	_read(size) {
 		this._startRead(size);
 	}
-	
+
 	_destroy(error, callback) {
 		this.close()
 			.then(res => callback(null, res)).catch(err => callback(err));
 		if(error) this.emit('error', error);
 	}
-	
+
 	_handle_open(fd) {
 		this.fd = fd;
 		this.emit('open', fd);
 	}
-	
+
 	_handle_close() {
 		delete this.fd;
 		this.emit('close');
 	}
-	
+
 	_handle_data(data) {
 		this.push(Buffer.from(data))
 	}
-	
+
 	static get constants() {
 		return CONSTANTS;
 	}
@@ -107,16 +117,16 @@ metadata.static_functions.forEach((func) => {
 module.exports = function(url) {
 	server = new Promise((resolve, reject) => {
 		let serv = io.connect(url, {transports: ['websocket']});
-		
+
 		serv.on('connect', () => resolve(serv));
 		serv.on('constants', (constants) => Object.assign(CONSTANTS, constants));
-		
+
 		serv.on('server_error', (error) => {
 			console.error('[linux-device] An remote error occured:', error);
 		});
-	
+
 		serv.on('connect', () => console.log('[linux-device] REMOTE DEVICE SUPPORT ENABLED, CONNECTED TO:', url));
-		
+
 		serv.on('handle_event', (handle, event, ...args) => {
 			if(!handles[handle]) return;
 			if(handles[handle]['_handle_'+event])
@@ -124,7 +134,7 @@ module.exports = function(url) {
 			else
 				handles[handle].emit(event, ...args);
 		});
-	
+
 		serv.on('disconnect', () => {
 			Object.keys(handles).forEach((handle) => {
 				handles[handle].destroy(new Error('Remote connection unexpectedly closed.'));
