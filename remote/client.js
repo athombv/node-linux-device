@@ -69,6 +69,7 @@ class DeviceHandleProxy extends Duplex {
   }
 
   _writePromise(chunk, encoding) {
+    // Check if a custom header is available which specifies the interval and repetitions of this command. Encoding happens in node-homey-infrared/index.js.
     const { buffer, interval, repetitions } = LDUtils.decodeWriteBuffer(chunk);
 
     return this._writeChunk(buffer, { interval, repetitions });
