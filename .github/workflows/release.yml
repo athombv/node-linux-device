@@ -71,8 +71,9 @@ jobs:
           ssh-private-key: ${{ env.SSH_KEY }}
 
       # Run `npm ci` to re-create your local environment (make sure to commit your package-lock.json!).
-      - name: Build
-        run: npm ci
+#       Should be skipped: https://github.com/athombv/node-linux-device/blob/master/package.json#L40
+#       - name: Build
+#         run: npm ci
 
       - name: Version bump patch
         if: github.event.inputs.releaseType == 'patch'
