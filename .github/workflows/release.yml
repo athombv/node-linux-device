@@ -35,7 +35,7 @@ jobs:
     name: Build & Deploy to NPM
 
     # Only run this job if initiator is not the Homey Github Actions Bot to prevent loops
-    if: github.actor != 'HomeyGithubActionsBot' && github.ref == 'refs/heads/production'
+    if: github.actor != 'homey-bot' && github.ref == 'refs/heads/production'
 
     runs-on: ubuntu-latest
     steps:
