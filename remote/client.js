@@ -103,6 +103,18 @@ class DeviceHandleProxy extends Duplex {
   static get constants() {
     return CONSTANTS;
   }
+
+  /**
+   * Disconnect the remote socket.io connection.
+   * Call this when done using all device handles to allow the process to exit.
+   */
+  static async disconnect() {
+    if (server) {
+      const serv = await server;
+      serv.disconnect();
+      server = null;
+    }
+  }
 }
 
 DeviceHandleProxy.prototype.__init = makeRemoteFunc('create_handle');
